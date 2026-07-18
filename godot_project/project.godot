@@ -1,0 +1,6 @@
+[application]
+name="LifeCapitalGodot"
+config_version=4
+
+[rendering]
+quality/driver/driver_name="Default"
