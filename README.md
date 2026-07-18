@@ -1,5 +1,5 @@
 <div align="center">
-   <img src="demo.gif" alt="Project Demo" width="600"/>
+   <img src="Demo.gif" alt="Project Demo" width="600"/>
 </div>
 
 # LifeCapital — Financial Freedom Game Engine (Prototype)
