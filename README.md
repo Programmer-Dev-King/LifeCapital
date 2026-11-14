@@ -1,285 +1,40 @@
-# LifeCapital — Desktop Game and Financial Simulator
+# LifeCapital
 
-The primary game is a native Windows desktop board game built in C# and WinForms. The repository also retains the earlier Python financial-simulation and Cashflow prototypes:
-1. **Financial Simulator** — India-specific income, asset, expense tracking with market dynamics
-2. **Cashflow Game** — Rat Race board game + Fast Track escape with 50+ Indian financial cards
+LifeCapital is a native Windows financial-literacy board game built with C# WinForms. The active `main` branch contains the desktop game and its tests.
 
-The Python backend is a legacy local prototype, not a production service.
+[![CI](https://github.com/Programmer-Dev-King/LifeCapital/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Programmer-Dev-King/LifeCapital/actions/workflows/ci.yml)
 
----
+## Play
 
-## Native Windows Desktop Game
+Download and extract the [latest Windows preview](https://github.com/Programmer-Dev-King/LifeCapital/releases/latest), then run `LifeCapital.Desktop.exe`. The preview bundle is self-contained and does not require a separate .NET runtime installation.
 
-The C# application and tests are in [`desktop/`](desktop/). To play, download the Windows preview bundle from [GitHub Releases](https://github.com/Programmer-Dev-King/LifeCapital/releases/latest). It is self-contained and does not require the .NET runtime.
+Start a game for 1–5 players, choose each player's profession and dream, then take turns rolling and resolving board spaces. Build a portfolio, manage expenses and liabilities, make deals, and work toward the Fast Track goals. Games can be saved and resumed locally.
 
-To build or run from source, install the .NET 10 SDK and Windows Desktop targeting pack, then follow [`desktop/README.md`](desktop/README.md).
+## Features
 
----
+- Two 24-space tracks with a Rat Race-to-Fast Track progression
+- Profession-based player profiles and selectable dreams
+- Deals, liabilities, portfolio changes, and a transaction ledger
+- Local save/load, including turn and random-number state
+- Creator-fund tracker
+- SQLite persistence on the player's device
 
-## 🚀 Quick Start
+## Build and test
 
-1. Open PowerShell and navigate to the repository:
+Requires the .NET 10 SDK and Windows Desktop targeting pack.
 
-```powershell
-cd "C:\path\to\LifeCapital"
-```
-
-2. Create and activate virtual environment:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-3. Install dependencies:
+Run these commands from the repository root:
 
 ```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+dotnet build .\desktop\LifeCapital.slnx -c Release
+dotnet run --project .\desktop\tests\LifeCapital.RulesTests\LifeCapital.RulesTests.csproj -c Release
+dotnet run --project .\desktop\tests\LifeCapital.DesktopSmoke\LifeCapital.DesktopSmoke.csproj -c Release
 ```
 
-4. Run the backend locally:
+For packaging and additional setup notes, see [`desktop/README.md`](desktop/README.md).
 
-```powershell
-python backend\app.py
-```
+## Local data and disclaimer
 
-5. To play **Cashflow Game CLI**:
+The desktop game stores its database at `%LOCALAPPDATA%\LifeCapital\life-capital.db`. Game scenarios and financial amounts are fictional and for educational entertainment only; they are not investment, tax, or legal advice. The game is independent and is not affiliated with or endorsed by the commercial CASHFLOW game or its rights holders. Real-world income tax is not calculated.
 
-```powershell
-python -m engine.cashflow_cli --profession startup --region tier2
-```
-
-6. Or open `godot_project/` in Godot 4.x and run `scenes/main.tscn` for the older Financial Simulator UI.
-
----
-
-## 🎮 Two Games Included
-
-### 1. Financial Simulator
-**Classic LifeCapital engine** — month-by-month financial decisions with Indian economy.
-- Build assets (stocks, rental properties, businesses, ETFs)
-- Manage liabilities (loans, credit cards)
-- Experience Indian events (festivals, monsoons, GST changes, job loss)
-- Track net worth and passive income over 36+ months
-
-**API Routes:**
-- `POST /session` — start an anonymous local game session
-- `POST /auth/login` — authenticate an existing user and create a session
-- `POST /action` — invest, buy rental, take loan, sell asset
-- `POST /step` — advance one or more months
-- `GET /state` — fetch current player state
-- `POST /save`, `POST /load` — save/load game to JSON
-
-### 2. Cashflow Game (New)
-**Rat Race → Fast Track escape gameplay** — true board game mechanics.
-- Roll dice and land on board spaces (Payday, Deals, Doodads, Market, Baby, Downsized, Charity)
-- Draw deal cards and decide: buy small opportunities or big investments
-- Handle unexpected doodads (medical bills, weddings, tuition hikes)
-- Escape condition: `Passive Income > Total Expenses` → enter **Fast Track**
-- Fast Track win: buy your Dream (₹250k) OR accumulate ₹50k/month passive income
-
-**Card Decks (50+ Indian cards):**
-- **Small Deals** (12 cards) — SIPs, mutual funds, chit funds, small shops
-- **Big Deals** (12 cards) — DDA flats, commercial spaces, farms, franchises
-- **Doodads** (15 cards) — Diwali shopping, medical emergencies, wedding costs, tuition hikes
-- **Market Cards** (20 cards) — Sensex surge, gold rally, property corrections, recession
-
-**API Routes (Cashflow):**
-- `POST /cashflow/start` — create a new Cashflow game session
-- `POST /cashflow/turn` — roll dice and take a turn
-- `POST /cashflow/deal` — accept/reject a deal card
-- `POST /cashflow/escape` — enter Fast Track if escape condition met
-- `POST /cashflow/sell` — sell an asset for cash
-- `GET /cashflow/decks` — view all card descriptions for UI reference
-
----
-
-## 📊 Features
-
-- **Dual Game Engines** — Financial Simulator and Cashflow board game
-- **SQLite Persistence** — Session storage, credentials, game state
-- **Session Auth** — Random session tokens are verified on protected routes and stored as hashes
-- **Indian Economic Model** — Regional income multipliers, tax slabs, GST, subsidies, monsoon shocks
-- **Card System** — 50+ culturally relevant financial products and events
-- **Turn-Based Logic** — Deterministic financial calculations, dice rolling, card drawing
-- **Godot UI** — Asset/liability visualization for Financial Simulator
-- **CLI Interface** — Interactive Cashflow game playable in terminal
-
----
-
-## 🧪 Testing
-
-Run all unit tests:
-
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-```
-
-Tests cover:
-- Financial Simulator (income, expenses, asset growth, event handling)
-- Cashflow Engine (escape condition, bankruptcy, asset selling)
-- Authentication and session persistence
-- Save/load functionality
-
----
-
-## 🔐 Authentication
-
-- There is no default admin account. The Godot prototype starts an anonymous local game session through `/session`.
-- Protected simulator and Cashflow routes require the session token returned when the game starts.
-- To create an account for the legacy `/auth/login` API, run this command and enter a 12+ character password when prompted:
-
-```powershell
-python backend\admin.py create_user <username>
-```
-
-- Session tokens expire after 24 hours. Use `/auth/refresh` to renew a valid session and `/auth/logout` to destroy it.
-- If migrating accounts created by the old global-salt implementation, set `LIFECAP_LEGACY_SALT` to the exact old salt only for the migration; successful logins are rehashed. Do not use the published fallback salt for ongoing accounts.
-- SQLite defaults to `lifecycle_sessions.db` in the repository root, which is ignored by Git; set `LIFECAP_DB_PATH` to move it elsewhere.
-- To revoke all persisted sessions, stop the backend and run `python backend\admin.py expire_all`, then restart it.
-- The legacy Flask service is for local prototyping only; it has no HTTPS termination or login rate limiting.
-
----
-
-## 📂 Project Structure
-
-```
-.
-├── backend/
-│   ├── app.py                    # Flask backend (LifeCapital + Cashflow routes)
-│   ├── admin.py                  # User management CLI
-│   └── security.py               # Password and session-token hashing
-├── engine/
-│   ├── cashflow.py               # Cashflow game engine (Rat Race + Fast Track)
-│   ├── cashflow_cli.py           # Interactive CLI for Cashflow game
-│   ├── cashflow_indian_decks.py  # 50+ Indian-flavored card decks
-│   ├── game_manager.py           # Financial Simulator game logic
-│   ├── economy.py                # Economy state and dynamics
-│   ├── player.py                 # Player financial model
-│   ├── assets.py                 # Asset and Liability classes
-│   ├── market.py                 # Stock/ETF market manager
-│   ├── events.py                 # Random events (festivals, crashes, etc.)
-│   ├── india_data.py             # Regional data, tax slabs, subsidies
-│   └── save_system.py            # JSON save/load for games
-├── tests/
-│   ├── test_auth.py              # Auth and session tests
-│   ├── test_security.py          # Password and token hashing tests
-│   ├── test_actions.py           # Action and sell preview tests
-│   ├── test_cashflow_engine.py   # Cashflow engine tests
-│   └── test_core.py              # Simulation tests
-├── godot_project/                # Godot 4.x UI (Financial Simulator only)
-├── desktop/                      # C# WinForms game and tests
-├── data/                         # CSV data (salaries, GST, subsidies)
-├── .vscode/                      # VS Code tasks and extensions
-├── requirements.txt              # Python dependencies
-├── README.md                     # This file
-└── SETUP.md                      # Detailed setup guide
-```
-
----
-
-## 🎯 Gameplay Walkthrough
-
-### Financial Simulator
-1. Choose profession and region
-2. Start simulation (36 months default)
-3. Each month:
-   - Earn salary + passive income
-   - Pay expenses, taxes, loan payments
-   - Choose action: invest market, buy rental, take loan, sell asset
-   - Random event occurs (festival bonus, job loss, monsoon damage, etc.)
-   - Assets grow/shrink based on market and economy
-4. Win condition: Build enough passive income to sustain lifestyle
-
-### Cashflow Game
-1. Choose profession (IAS, CA, Clerk, Startup founder, Farmer)
-2. Roll die, move around board
-3. Land on space:
-   - **Payday** → collect monthly cashflow
-   - **Deal** → draw small/big deal card, decide to buy
-   - **Doodad** → pay unexpected expense
-   - **Market** → asset values change
-   - **Baby** → add child, increase monthly expenses
-   - **Downsized** → lose job, lose 2 turns
-   - **Charity** → donate for social good
-4. **Escape Rat Race:** When `Passive Income > Total Expenses`, enter Fast Track
-5. **Win Fast Track:** Buy Dream (₹250k) OR reach ₹50k/month passive income
-
----
-
-## 🛠️ Development Commands
-
-**Run backend (port 5000):**
-```powershell
-python backend\app.py
-```
-
-**Run Cashflow game (CLI):**
-```powershell
-python -m engine.cashflow_cli --profession startup --region tier2 --seed 42
-```
-
-**Run all tests:**
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-```
-
-**Run specific test:**
-```powershell
-python -m unittest tests.test_cashflow_engine.CashflowEngineTests.test_escape_condition_and_fast_track_entry
-```
-
-**Create new user:**
-
-```powershell
-python backend\admin.py create_user john_doe
-```
-
----
-
-## 🚢 Legacy Backend Deployment Notes
-
-The Python backend is not ready for public deployment. It uses Flask's development server and still needs HTTPS, login rate limiting, production error handling, and a deployment-specific security review. Do not expose it directly to the internet.
-
----
-
-## 📚 Documentation
-
-- **SETUP.md** — Detailed environment setup guide
-- **engine/cashflow.py** — Game engine docstrings and class definitions
-- **engine/cashflow_indian_decks.py** — Card deck specifications and scenarios
-- **README.md** — This file (high-level overview)
-
----
-
-## 🤝 Contributing
-
-- Add new Indian card scenarios to `cashflow_indian_decks.py`
-- Improve AI decision-making in `ai_manager.py`
-- Extend economy model with seasonal trends
-- Build frontend UI (React, Vue, Flutter, etc.)
-- Translate cards and UI to regional languages
-
----
-
-## 📖 Next Steps
-
-1. **Play & Feedback** — Test both games, provide balance feedback
-2. **UI Enhancement** — Build richer Godot/web UI for card visualization
-3. **Multiplayer** — Add turn-based multiplayer using WebSockets
-4. **Analytics** — Track player decisions, win rates, common failure modes
-5. **Localization** — Translate to Hindi, Tamil, Telugu, Kannada, etc.
-6. **Mobile App** — React Native or Flutter client
-7. **Economy Tuning** — Balance card values based on player data
-
----
-
-## 📄 License & Attribution
-
-Inspired by the original Cashflow board game (Robert Kiyosaki). This prototype adds Indian economic realism, Rat Race/Fast Track mechanics, and playable backend integration.
-
-**Author:** Dev  
-**Version:** 0.1.0 (Prototype)  
-**Last Updated:** June 2026
-
+Earlier prototype snapshots remain available only through their historical Git tags; they are not part of the active desktop project.

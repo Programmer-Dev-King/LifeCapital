@@ -12,11 +12,11 @@ Life Capital is a native Windows desktop financial-literacy board game, built in
 
 ## Rules and content
 
-The two 24-space tracks, player profiles, and project-specific goals are based on the supplied project summary. The small-deal limit, loan increments and interest, charity bonus, Fast Track entry bonus, and win goals are implemented as game rules described by that summary.
+The game includes two 24-space tracks, player profiles, selectable goals, deals, loans, charity, and Fast Track objectives.
 
-Deal and event cards, living budgets, and investment returns are original fictional scenarios for gameplay. They are not copied from the commercial CASHFLOW game and are not real investment projections or financial advice. The game does not currently calculate real-world income tax.
+Deal and event cards, living budgets, and investment returns are fictional scenarios for gameplay. They are not copied from the commercial CASHFLOW game and are not real investment projections or financial advice. The game does not calculate real-world income tax.
 
-The creator-fund tracker starts at ₹18,150 with a ₹55,00,000 target. Its percentage is calculated from those amounts (about 0.33%); the 33% figure in the project summary does not match that target and starting balance.
+The creator-fund tracker reports progress from its starting balance toward its target.
 
 ## Build and test
 
