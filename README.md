@@ -1,7 +1,3 @@
-<div align="center">
-  <img src="Demo.gif" alt="Project Demo" width="600"/>
-</div>
-
 # LifeCapital — Desktop Game and Financial Simulator
 
 The primary game is a native Windows desktop board game built in C# and WinForms. The repository also retains the earlier Python financial-simulation and Cashflow prototypes:
