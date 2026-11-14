@@ -1,10 +1,12 @@
 import unittest
 import hashlib
+import json
 import sqlite3
 import uuid
 from backend import app as app_module
 from backend.admin import create_user, expire_all
 from backend.security import hash_password
+from engine.cashflow import Asset, AssetType, Liability, LiabilityType
 
 
 class AuthTests(unittest.TestCase):
@@ -119,6 +121,64 @@ class AuthTests(unittest.TestCase):
             self.client.post(path, json={"session_id": sid}, headers={"X-Session-Token": token}).status_code,
             200,
         )
+
+    def test_cashflow_session_restores_full_state_after_restart(self):
+        started = self.client.post(
+            '/cashflow/start',
+            json={"profession": "ca", "region": "metro", "seed": 42},
+        ).get_json()
+        sid = started["session_id"]
+        token = started["token"]
+        engine = app_module._cashflow_sessions[sid]["engine"]
+        player = engine.player
+        player.cash = 123456.0
+        player.salary = 76543.0
+        player.taxes = 4321.0
+        player.other_expenses = 8765.0
+        player.children = 2
+        player.child_cost_per_month = 2345.0
+        player.position = 9
+        player.ft_position = 3
+        player.on_fast_track = True
+        player.ft_monthly_income = 90000.0
+        player.owns_dream = True
+        player.dream_cost = 125000.0
+        player.skip_turns = 1
+        player.assets = [
+            Asset(
+                name="Snapshot rental",
+                asset_type=AssetType.REAL_ESTATE,
+                value=200000.0,
+                cashflow=5000.0,
+                purchase_price=180000.0,
+                down_payment=50000.0,
+                notes="Persistence regression test",
+            )
+        ]
+        player.liabilities = [
+            Liability(
+                name="Snapshot mortgage",
+                liability_type=LiabilityType.MORTGAGE,
+                principal=100000.0,
+                monthly_payment=1200.0,
+                interest_rate=0.08,
+                remaining_months=120,
+            )
+        ]
+        engine.last_event = "Persisted test event."
+        expected = engine.persistence_snapshot()
+
+        with sqlite3.connect(app_module.DB_PATH) as con:
+            con.execute(
+                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
+                (json.dumps(expected), sid),
+            )
+        app_module._cashflow_sessions.pop(sid, None)
+
+        restored, _ = app_module._get_cashflow_session(sid, token)
+        restored_engine = restored["engine"]
+        self.assertEqual(expected, restored_engine.persistence_snapshot())
+        self.assertEqual(engine.roll_die(), restored_engine.roll_die())
 
     def test_load_requires_an_authenticated_session(self):
         response = self.client.post('/load', json={"session_id": "untrusted"})

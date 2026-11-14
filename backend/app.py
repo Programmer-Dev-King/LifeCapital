@@ -12,6 +12,7 @@ import sqlite3
 import secrets
 import json
 import hashlib
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 from backend.security import hash_password, hash_session_token, password_needs_rehash, session_token_matches, verify_password
@@ -630,6 +631,17 @@ def load():
 # ============ Cashflow Game Routes ============
 
 
+def _persist_cashflow_state(session_id: str, engine: CashflowGameEngine) -> None:
+    with closing(sqlite3.connect(DB_PATH)) as con:
+        with con:
+            cur = con.execute(
+                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
+                (json.dumps(engine.persistence_snapshot()), session_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("The Cashflow session no longer exists in the database.")
+
+
 @app.route("/cashflow/start", methods=["POST"])
 def cashflow_start():
     """Start a new Cashflow game session."""
@@ -642,24 +654,22 @@ def cashflow_start():
     session_id = str(uuid.uuid4())
     token = secrets.token_hex(16)
     token_hash = hash_session_token(token)
-    
-    _cashflow_sessions[session_id] = {"engine": engine, "lock": threading.Lock(), "token_hash": token_hash}
-    
-    # persist to DB
-    try:
-        import datetime
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat()
-        con = sqlite3.connect(DB_PATH)
-        cur = con.cursor()
-        cur.execute(
-            "REPLACE INTO cashflow_sessions(session_id, token, game_state, created_at, last_active, token_expires) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, token_hash, json.dumps(engine.state_snapshot()), now, now, expires),
-        )
-        con.commit()
-        con.close()
-    except Exception:
-        pass
+
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as con:
+        with con:
+            con.execute(
+                "INSERT INTO cashflow_sessions(session_id, token, game_state, created_at, last_active, token_expires) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, token_hash, json.dumps(engine.persistence_snapshot()), now, now, expires),
+            )
+    _cashflow_sessions[session_id] = {
+        "engine": engine,
+        "lock": threading.Lock(),
+        "token_hash": token_hash,
+    }
     
     return jsonify({
         "status": "started",
@@ -703,10 +713,7 @@ def _get_cashflow_session(session_id: str | None, token: str | None) -> tuple | 
         _cashflow_sessions.pop(session_id, None)
         return None
     if not sess:
-        engine = CashflowGameEngine(profession="startup", region="tier2")
-        state_dict = json.loads(row[0])
-        engine.player.cash = state_dict.get("cash", 0.0)
-        engine.player.salary = state_dict.get("salary", 0.0)
+        engine = CashflowGameEngine.from_snapshot(json.loads(row[0]))
         sess = {"engine": engine, "lock": threading.Lock(), "token_hash": row[1]}
         _cashflow_sessions[session_id] = sess
     return sess, session_id
@@ -732,18 +739,7 @@ def cashflow_turn():
             turn_result = engine.fast_track_turn()
         else:
             turn_result = engine.take_turn()
-        
-        try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
-                (json.dumps(engine.state_snapshot()), session_id),
-            )
-            con.commit()
-            con.close()
-        except Exception:
-            pass
+        _persist_cashflow_state(session_id, engine)
     
     return jsonify({
         "status": "turn_complete",
@@ -789,18 +785,7 @@ def cashflow_deal():
             return jsonify({"error": "deal not found"}), 404
         
         event = engine.apply_deal_card(card, accept)
-        
-        try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
-                (json.dumps(engine.state_snapshot()), session_id),
-            )
-            con.commit()
-            con.close()
-        except Exception:
-            pass
+        _persist_cashflow_state(session_id, engine)
     
     return jsonify({
         "status": "deal_applied",
@@ -827,18 +812,7 @@ def cashflow_escape():
     
     with lock:
         event = engine.enter_fast_track()
-        
-        try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
-                (json.dumps(engine.state_snapshot()), session_id),
-            )
-            con.commit()
-            con.close()
-        except Exception:
-            pass
+        _persist_cashflow_state(session_id, engine)
     
     return jsonify({
         "status": "escape_attempted",
@@ -867,18 +841,7 @@ def cashflow_sell():
     with lock:
         asset_name = data.get("asset_name", "")
         event = engine.sell_asset(asset_name)
-        
-        try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "UPDATE cashflow_sessions SET game_state = ? WHERE session_id = ?",
-                (json.dumps(engine.state_snapshot()), session_id),
-            )
-            con.commit()
-            con.close()
-        except Exception:
-            pass
+        _persist_cashflow_state(session_id, engine)
     
     return jsonify({
         "status": "asset_sold",

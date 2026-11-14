@@ -357,11 +357,63 @@ class TurnResult:
     bankrupt: bool = False
 
 
+def _state_lists_to_tuples(value):
+    if isinstance(value, (list, tuple)):
+        return tuple(_state_lists_to_tuples(item) for item in value)
+    return value
+
+
+def _asset_from_snapshot(data: dict) -> Asset:
+    return Asset(
+        name=data["name"],
+        asset_type=AssetType(data["asset_type"]),
+        value=float(data["value"]),
+        cashflow=float(data["cashflow"]),
+        purchase_price=float(data["purchase_price"]),
+        down_payment=float(data.get("down_payment", 0.0)),
+        notes=data.get("notes", ""),
+    )
+
+
+def _liability_from_snapshot(data: dict) -> Liability:
+    return Liability(
+        name=data["name"],
+        liability_type=LiabilityType(data["liability_type"]),
+        principal=float(data["principal"]),
+        monthly_payment=float(data["monthly_payment"]),
+        interest_rate=float(data["interest_rate"]),
+        remaining_months=int(data["remaining_months"]),
+    )
+
+
+def _player_from_snapshot(data: dict) -> Player:
+    return Player(
+        name=data["name"],
+        profession=data["profession"],
+        region=data["region"],
+        salary=float(data["salary"]),
+        taxes=float(data["taxes"]),
+        other_expenses=float(data["other_expenses"]),
+        children=int(data["children"]),
+        child_cost_per_month=float(data["child_cost_per_month"]),
+        cash=float(data["cash"]),
+        position=int(data["position"]),
+        ft_position=int(data["ft_position"]),
+        on_fast_track=bool(data["on_fast_track"]),
+        ft_monthly_income=float(data["ft_monthly_income"]),
+        owns_dream=bool(data["owns_dream"]),
+        dream_cost=float(data["dream_cost"]),
+        bankrupt=bool(data["bankrupt"]),
+        skip_turns=int(data["skip_turns"]),
+        assets=[_asset_from_snapshot(asset) for asset in data["assets"]],
+        liabilities=[_liability_from_snapshot(liability) for liability in data["liabilities"]],
+    )
+
+
 class CashflowGameEngine:
     def __init__(self, profession: str = "startup", region: str = "tier2", seed: int | None = None) -> None:
         self.seed = seed
-        if seed is not None:
-            random.seed(seed)
+        self._random = random.Random(seed)
         self.profession = profession
         self.region = region
         self.player = self._create_player(profession, region)
@@ -383,7 +435,7 @@ class CashflowGameEngine:
         }
         profile = mapping.get(profession.lower(), mapping["startup"])
         salary = profile["salary"] * (1.0 if region == "metro" else 0.9 if region == "tier2" else 0.75)
-        cash = max(10000.0, salary * random.uniform(0.3, 0.6))
+        cash = max(10000.0, salary * self._random.uniform(0.3, 0.6))
         player = Player(
             name=profession.capitalize(),
             profession=profession,
@@ -400,7 +452,7 @@ class CashflowGameEngine:
         return player
 
     def roll_die(self, count: int = 1) -> int:
-        return sum(random.randint(1, 6) for _ in range(count))
+        return sum(self._random.randint(1, 6) for _ in range(count))
 
     def draw_card(self, deck_name: str):
         deck = {
@@ -411,7 +463,7 @@ class CashflowGameEngine:
         }[deck_name]
         if len(deck) == 0:
             return None
-        return random.choice(deck)
+        return self._random.choice(deck)
 
     def take_turn(self) -> TurnResult:
         if self.player.bankrupt:
@@ -642,3 +694,70 @@ class CashflowGameEngine:
             "owns_dream": self.player.owns_dream,
             "bankrupt": self.player.bankrupt,
         }
+
+    def persistence_snapshot(self) -> dict:
+        player = self.player
+        return {
+            "version": 1,
+            "profession": self.profession,
+            "region": self.region,
+            "player": {
+                "name": player.name,
+                "profession": player.profession,
+                "region": player.region,
+                "salary": player.salary,
+                "taxes": player.taxes,
+                "other_expenses": player.other_expenses,
+                "children": player.children,
+                "child_cost_per_month": player.child_cost_per_month,
+                "cash": player.cash,
+                "position": player.position,
+                "ft_position": player.ft_position,
+                "on_fast_track": player.on_fast_track,
+                "ft_monthly_income": player.ft_monthly_income,
+                "owns_dream": player.owns_dream,
+                "dream_cost": player.dream_cost,
+                "bankrupt": player.bankrupt,
+                "skip_turns": player.skip_turns,
+                "assets": [asset.to_dict() for asset in player.assets],
+                "liabilities": [liability.to_dict() for liability in player.liabilities],
+            },
+            "random_state": self._random.getstate(),
+            "last_event": self.last_event,
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> CashflowGameEngine:
+        if not isinstance(snapshot, dict):
+            raise ValueError("Cashflow save data must be an object.")
+
+        version = snapshot.get("version")
+        if version is None:
+            engine = cls()
+            player = engine.player
+            player.cash = float(snapshot.get("cash", player.cash))
+            player.salary = float(snapshot.get("salary", player.salary))
+            player.children = int(snapshot.get("children", player.children))
+            player.position = int(snapshot.get("position", player.position))
+            player.on_fast_track = bool(snapshot.get("on_fast_track", player.on_fast_track))
+            player.ft_position = int(snapshot.get("ft_position", player.ft_position))
+            player.ft_monthly_income = float(snapshot.get("ft_monthly_income", player.ft_monthly_income))
+            player.owns_dream = bool(snapshot.get("owns_dream", player.owns_dream))
+            player.bankrupt = bool(snapshot.get("bankrupt", player.bankrupt))
+            player.assets = [_asset_from_snapshot(asset) for asset in snapshot.get("assets", [])]
+            player.liabilities = [
+                _liability_from_snapshot(liability) for liability in snapshot.get("liabilities", [])
+            ]
+            return engine
+        if type(version) is not int or version != 1:
+            raise ValueError(f"Unsupported Cashflow save version: {version}.")
+
+        engine = cls(
+            profession=snapshot["profession"],
+            region=snapshot["region"],
+            seed=0,
+        )
+        engine.player = _player_from_snapshot(snapshot["player"])
+        engine._random.setstate(_state_lists_to_tuples(snapshot["random_state"]))
+        engine.last_event = snapshot["last_event"]
+        return engine
