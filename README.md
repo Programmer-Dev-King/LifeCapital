@@ -2,19 +2,27 @@
   <img src="Demo.gif" alt="Project Demo" width="600"/>
 </div>
 
-# LifeCapital — Financial Freedom Game Engine (Prototype)
+# LifeCapital — Desktop Game and Financial Simulator
 
-A dual financial simulation prototype built in Python featuring:
+The primary game is a native Windows desktop board game built in C# and WinForms. The repository also retains the earlier Python financial-simulation and Cashflow prototypes:
 1. **Financial Simulator** — India-specific income, asset, expense tracking with market dynamics
 2. **Cashflow Game** — Rat Race board game + Fast Track escape with 50+ Indian financial cards
 
-Both games include Flask backend persistence, session management, and token-based auth.
+The Python backend is a legacy local prototype, not a production service.
+
+---
+
+## Native Windows Desktop Game
+
+The C# application and tests are in [`desktop/`](desktop/). To play, download the Windows preview bundle from [GitHub Releases](https://github.com/Programmer-Dev-King/LifeCapital/releases/latest). It is self-contained and does not require the .NET runtime.
+
+To build or run from source, install the .NET 10 SDK and Windows Desktop targeting pack, then follow [`desktop/README.md`](desktop/README.md).
 
 ---
 
 ## 🚀 Quick Start
 
-1. Open PowerShell and navigate to the repo:
+1. Open PowerShell and navigate to the repository:
 
 ```powershell
 cd "C:\path\to\LifeCapital"
@@ -34,25 +42,19 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-4. Set up environment variables:
-
-```powershell
-copy .env.example .env
-```
-
-5. Run the backend server:
+4. Run the backend locally:
 
 ```powershell
 python backend\app.py
 ```
 
-6. To play **Cashflow Game CLI**:
+5. To play **Cashflow Game CLI**:
 
 ```powershell
 python -m engine.cashflow_cli --profession startup --region tier2
 ```
 
-7. Or open `godot_project/` in Godot 4.x and run `scenes/main.tscn` for Financial Simulator UI.
+6. Or open `godot_project/` in Godot 4.x and run `scenes/main.tscn` for the older Financial Simulator UI.
 
 ---
 
@@ -66,7 +68,8 @@ python -m engine.cashflow_cli --profession startup --region tier2
 - Track net worth and passive income over 36+ months
 
 **API Routes:**
-- `POST /auth/login` — create a session
+- `POST /session` — start an anonymous local game session
+- `POST /auth/login` — authenticate an existing user and create a session
 - `POST /action` — invest, buy rental, take loan, sell asset
 - `POST /step` — advance one or more months
 - `GET /state` — fetch current player state
@@ -100,7 +103,7 @@ python -m engine.cashflow_cli --profession startup --region tier2
 
 - **Dual Game Engines** — Financial Simulator and Cashflow board game
 - **SQLite Persistence** — Session storage, credentials, game state
-- **Token-Based Auth** — Secure session tokens with 24-hour expiry
+- **Session Auth** — Random session tokens are verified on protected routes and stored as hashes
 - **Indian Economic Model** — Regional income multipliers, tax slabs, GST, subsidies, monsoon shocks
 - **Card System** — 50+ culturally relevant financial products and events
 - **Turn-Based Logic** — Deterministic financial calculations, dice rolling, card drawing
@@ -127,27 +130,19 @@ Tests cover:
 
 ## 🔐 Authentication
 
-- Default admin user: username `admin`, password `admin`
-- Set `LIFECAP_ADMIN_PW` and `LIFECAP_SALT` in `.env` before production
-- Create additional users:
+- There is no default admin account. The Godot prototype starts an anonymous local game session through `/session`.
+- Protected simulator and Cashflow routes require the session token returned when the game starts.
+- To create an account for the legacy `/auth/login` API, run this command and enter a 12+ character password when prompted:
 
 ```powershell
-python backend\admin.py create_user <username> <password>
+python backend\admin.py create_user <username>
 ```
 
-- Tokens expire after 24 hours; use `/auth/refresh` to extend
-- Use `/auth/logout` to destroy a session
-
----
-
-## 📝 Environment Variables
-
-Copy `.env.example` to `.env` and customize:
-
-```
-LIFECAP_ADMIN_PW=admin
-LIFECAP_SALT=please_change_to_secure_random
-```
+- Session tokens expire after 24 hours. Use `/auth/refresh` to renew a valid session and `/auth/logout` to destroy it.
+- If migrating accounts created by the old global-salt implementation, set `LIFECAP_LEGACY_SALT` to the exact old salt only for the migration; successful logins are rehashed. Do not use the published fallback salt for ongoing accounts.
+- SQLite defaults to `lifecycle_sessions.db` in the repository root, which is ignored by Git; set `LIFECAP_DB_PATH` to move it elsewhere.
+- To revoke all persisted sessions, stop the backend and run `python backend\admin.py expire_all`, then restart it.
+- The legacy Flask service is for local prototyping only; it has no HTTPS termination or login rate limiting.
 
 ---
 
@@ -157,7 +152,8 @@ LIFECAP_SALT=please_change_to_secure_random
 .
 ├── backend/
 │   ├── app.py                    # Flask backend (LifeCapital + Cashflow routes)
-│   └── admin.py                  # User management CLI
+│   ├── admin.py                  # User management CLI
+│   └── security.py               # Password and session-token hashing
 ├── engine/
 │   ├── cashflow.py               # Cashflow game engine (Rat Race + Fast Track)
 │   ├── cashflow_cli.py           # Interactive CLI for Cashflow game
@@ -172,10 +168,12 @@ LIFECAP_SALT=please_change_to_secure_random
 │   └── save_system.py            # JSON save/load for games
 ├── tests/
 │   ├── test_auth.py              # Auth and session tests
+│   ├── test_security.py          # Password and token hashing tests
 │   ├── test_actions.py           # Action and sell preview tests
 │   ├── test_cashflow_engine.py   # Cashflow engine tests
 │   └── test_core.py              # Simulation tests
 ├── godot_project/                # Godot 4.x UI (Financial Simulator only)
+├── desktop/                      # C# WinForms game and tests
 ├── data/                         # CSV data (salaries, GST, subsidies)
 ├── .vscode/                      # VS Code tasks and extensions
 ├── requirements.txt              # Python dependencies
@@ -237,23 +235,16 @@ python -m unittest tests.test_cashflow_engine.CashflowEngineTests.test_escape_co
 ```
 
 **Create new user:**
+
 ```powershell
-python backend\admin.py create_user john_doe password123
+python backend\admin.py create_user john_doe
 ```
 
 ---
 
-## 🚢 Production Deployment Checklist
+## 🚢 Legacy Backend Deployment Notes
 
-- [ ] Change `LIFECAP_ADMIN_PW` to strong password
-- [ ] Generate and set `LIFECAP_SALT` to 32-char random string
-- [ ] Move `lifecycle_sessions.db` to secure location with regular backups
-- [ ] Enable HTTPS for `/auth/login`, `/auth/refresh`, `/auth/logout`
-- [ ] Rate-limit login attempts to prevent brute force
-- [ ] Use PostgreSQL instead of SQLite for multi-server setup
-- [ ] Add request logging and error monitoring
-- [ ] Test game balance with larger player base
-- [ ] Document card probabilities and drop rates
+The Python backend is not ready for public deployment. It uses Flask's development server and still needs HTTPS, login rate limiting, production error handling, and a deployment-specific security review. Do not expose it directly to the internet.
 
 ---
 

@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LifeCapital.Core/LifeCapital.Core.csproj" />
+    <Project Path="src/LifeCapital.Desktop/LifeCapital.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LifeCapital.RulesTests/LifeCapital.RulesTests.csproj" />
+    <Project Path="tests/LifeCapital.DesktopSmoke/LifeCapital.DesktopSmoke.csproj" />
+  </Folder>
+</Solution>

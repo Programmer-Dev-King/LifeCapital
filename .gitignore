@@ -1,0 +1,16 @@
+.env
+.venv/
+venv/
+.vs/
+*.csproj.user
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+build/
+dist/
+desktop/**/bin/
+desktop/**/obj/
+desktop/publish/
+godot_project/.godot/

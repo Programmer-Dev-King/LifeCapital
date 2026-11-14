@@ -21,9 +21,8 @@ All requests should include the session token in either the header or request bo
 Returned from `/cashflow/start`. Pass in subsequent requests via:
 - **Header:** `X-Session-Token: <token>`
 - **Body:** `{ "token": "<token>" }`
-- **Query:** `?token=<token>`
 
-Token expires after 24 hours.
+Use the header rather than putting the token in a URL. Tokens expire after 24 hours and are stored as hashes.
 
 ---
 

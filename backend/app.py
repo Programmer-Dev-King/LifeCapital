@@ -11,7 +11,10 @@ import uuid
 import sqlite3
 import secrets
 import json
+import hashlib
+from pathlib import Path
 from typing import Optional
+from backend.security import hash_password, hash_session_token, password_needs_rehash, session_token_matches, verify_password
 
 app = Flask(__name__)
 
@@ -20,7 +23,10 @@ _cashflow_sessions: dict[str, dict] = {}
 
 
 # Simple SQLite-based session store for persistence
-DB_PATH = os.path.join(os.getcwd(), "lifecycle_sessions.db")
+DB_PATH = os.environ.get(
+    "LIFECAP_DB_PATH",
+    str(Path(__file__).resolve().parent.parent / "lifecycle_sessions.db"),
+)
 
 def _init_db() -> None:
     con = sqlite3.connect(DB_PATH)
@@ -47,6 +53,16 @@ def _init_db() -> None:
         )
         """
     )
+    legacy_salts = {
+        "static_salt_please_change",
+        os.environ.get("LIFECAP_SALT", ""),
+        os.environ.get("LIFECAP_LEGACY_SALT", ""),
+    }
+    for legacy_salt in legacy_salts - {""}:
+        default_admin_hash = hashlib.pbkdf2_hmac(
+            "sha256", b"admin", legacy_salt.encode("utf-8"), 100_000
+        ).hex()
+        cur.execute("DELETE FROM users WHERE username = 'admin' AND pw_hash = ?", (default_admin_hash,))
     # cashflow game sessions
     cur.execute(
         """
@@ -64,7 +80,7 @@ def _init_db() -> None:
     con.close()
 
 
-def _save_session_db(session_id: str, token: str, player_json: str, economy_json: str, created_at: str | None = None, last_active: str | None = None, token_expires: str | None = None) -> None:
+def _save_session_db(session_id: str, token_hash: str, player_json: str, economy_json: str, created_at: str | None = None, last_active: str | None = None, token_expires: str | None = None) -> None:
     import datetime
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -85,7 +101,7 @@ def _save_session_db(session_id: str, token: str, player_json: str, economy_json
             token_expires = (datetime.datetime.fromisoformat(la) + datetime.timedelta(hours=24)).isoformat()
     cur.execute(
         "REPLACE INTO sessions(session_id, token, player_json, economy_json, created_at, last_active, token_expires) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (session_id, token, player_json, economy_json, created, la, token_expires),
+        (session_id, token_hash, player_json, economy_json, created, la, token_expires),
     )
     con.commit()
     con.close()
@@ -101,7 +117,7 @@ def _load_session_db(session_id: str) -> Optional[dict]:
         return None
     return {
         "session_id": row[0],
-        "token": row[1],
+        "token_hash": row[1],
         "player_json": row[2],
         "economy_json": row[3],
         "created_at": row[4],
@@ -114,30 +130,6 @@ def _load_session_db(session_id: str) -> Optional[dict]:
 _init_db()
 
 
-def _hash_password(password: str) -> str:
-    import hashlib, os
-
-    salt = os.environ.get("LIFECAP_SALT", "static_salt_please_change").encode("utf-8")
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
-    return dk.hex()
-
-
-def _ensure_default_user():
-    # create a default admin user with password 'admin' if no users exist
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute("SELECT COUNT(*) FROM users")
-    row = cur.fetchone()
-    if row and row[0] == 0:
-        pw = _hash_password(os.environ.get("LIFECAP_ADMIN_PW", "admin"))
-        cur.execute("INSERT OR REPLACE INTO users(username, pw_hash) VALUES (?, ?)", ("admin", pw))
-        con.commit()
-    con.close()
-
-
-_ensure_default_user()
-
-
 def get_session(session_id: str | None):
     if not session_id:
         return None
@@ -148,79 +140,67 @@ def current_session():
     data = request.get_json(silent=True) or {}
     session_id = request.args.get("session_id") or data.get("session_id")
     token = request.headers.get("X-Session-Token") or data.get("token")
+    if not session_id or not token:
+        return None, session_id
+
     sess = get_session(session_id)
     if not sess and session_id:
-        # try load from DB
         row = _load_session_db(session_id)
-        if row:
-            # enforce token expiry: if token_expires < now, drop saved session
-            try:
-                import datetime
+        if not row or not session_token_matches(token, row.get("token_hash")):
+            return None, session_id
+        import datetime
+        from engine.player import Player
 
-                if row.get("token_expires"):
-                    exp = datetime.datetime.fromisoformat(row.get("token_expires"))
-                    if datetime.datetime.now(datetime.timezone.utc) > exp:
-                        # expired: remove from DB and do not restore
-                        con = sqlite3.connect(DB_PATH)
-                        cur = con.cursor()
-                        cur.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                        con.commit()
-                        con.close()
-                        return None
-            except Exception:
-                pass
-
-            import json
-            from engine.player import Player
-
+        try:
+            exp = datetime.datetime.fromisoformat(row["token_expires"])
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=datetime.timezone.utc)
+            if datetime.datetime.now(datetime.timezone.utc) > exp:
+                return None, session_id
             gm = GameManager()
-            try:
-                gm.player = Player.from_dict(json.loads(row["player_json"]))
-                gm.economy.state = type(gm.economy.state)(**json.loads(row["economy_json"]))
-            except Exception:
-                pass
-            _sessions[session_id] = {"game": gm, "lock": threading.Lock(), "token": row["token"], "token_expires": row.get("token_expires")}
-            sess = _sessions[session_id]
-    # simple token auth check
-    if sess and token and sess.get("token") != token:
-        return None, session_id
-    # enforce expiry for in-memory sessions too
-    if sess:
-        try:
-            import datetime
-            # re-check DB for latest token_expires to honor forced expiries
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute("SELECT token_expires FROM sessions WHERE session_id = ?", (session_id,))
-            rr = cur.fetchone()
-            con.close()
-            te = None
-            if rr:
-                te = rr[0]
-                sess["token_expires"] = te
-            if te:
-                exp = datetime.datetime.fromisoformat(te)
-                if exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=datetime.timezone.utc)
-                if datetime.datetime.now(datetime.timezone.utc) > exp:
-                    # expired: remove memory and DB
-                    _sessions.pop(session_id, None)
-                    con = sqlite3.connect(DB_PATH)
-                    cur = con.cursor()
-                    cur.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                    con.commit()
-                    con.close()
-                    return None, session_id
-        except Exception:
-            pass
-    # update last_active timestamp when session accessed
-    if sess:
-        try:
-            import datetime, json
+            gm.player = Player.from_dict(json.loads(row["player_json"]))
+            gm.economy.state = type(gm.economy.state)(**json.loads(row["economy_json"]))
+        except (KeyError, TypeError, ValueError):
+            return None, session_id
+        _sessions[session_id] = {
+            "game": gm,
+            "lock": threading.Lock(),
+            "token_hash": row["token_hash"],
+            "token_expires": row["token_expires"],
+        }
+        sess = _sessions[session_id]
 
-            _save_session_db(session_id, sess.get("token"), json.dumps(sess["game"].player.to_dict()), json.dumps(sess["game"].economy.state.__dict__), None, datetime.datetime.utcnow().isoformat())
-        except Exception:
-            pass
+    if not sess or not session_token_matches(token, sess.get("token_hash")):
+        return None, session_id
+
+    if sess:
+        import datetime
+
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        cur.execute("SELECT token, token_expires FROM sessions WHERE session_id = ?", (session_id,))
+        row = cur.fetchone()
+        con.close()
+        if not row or row[0] != sess["token_hash"]:
+            _sessions.pop(session_id, None)
+            return None, session_id
+        try:
+            exp = datetime.datetime.fromisoformat(row[1])
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            _sessions.pop(session_id, None)
+            return None, session_id
+        if datetime.datetime.now(datetime.timezone.utc) > exp:
+            _sessions.pop(session_id, None)
+            return None, session_id
+        sess["token_expires"] = row[1]
+        _save_session_db(
+            session_id,
+            sess["token_hash"],
+            json.dumps(sess["game"].player.to_dict()),
+            json.dumps(sess["game"].economy.state.__dict__),
+        )
     return sess, session_id
 
 
@@ -230,7 +210,7 @@ def action_preview():
     data = request.get_json(silent=True) or {}
     session, session_id = current_session()
     if not session:
-        return jsonify({"error": "no session", "session_id": None}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     gm = session["game"]
     act = data.get("type") or data.get("action") or "preview_sell"
     if act in ("preview_sell", "sell_preview") or data.get("name"):
@@ -302,12 +282,13 @@ def create_session():
 
     session_id = str(uuid.uuid4())
     token = secrets.token_hex(16)
-    _sessions[session_id] = {"game": gm, "lock": threading.Lock(), "token": token}
+    token_hash = hash_session_token(token)
+    _sessions[session_id] = {"game": gm, "lock": threading.Lock(), "token_hash": token_hash}
     # persist minimal snapshot
     import json, datetime
 
-    now = datetime.datetime.utcnow().isoformat()
-    _save_session_db(session_id, token, json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__), now, now)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+    _save_session_db(session_id, token_hash, json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__), now, now)
     return jsonify({
         "status": "started",
         "session_id": session_id,
@@ -319,23 +300,26 @@ def create_session():
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
-    """Login endpoint. If `username` and `password` provided, validate user; otherwise create anonymous session."""
+    """Authenticate an existing user and create a game session."""
     data = request.get_json(silent=True) or {}
     username = data.get("username")
     password = data.get("password")
-    # if credentials provided, validate
-    if username and password:
-        con = sqlite3.connect(DB_PATH)
-        cur = con.cursor()
-        cur.execute("SELECT pw_hash FROM users WHERE username = ?", (username,))
-        row = cur.fetchone()
+    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+        return jsonify({"error": "username and password are required"}), 400
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("SELECT pw_hash FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    if not row or not verify_password(password, row[0], os.environ.get("LIFECAP_LEGACY_SALT")):
         con.close()
-        if not row:
-            return jsonify({"error": "invalid credentials"}), 401
-        if row[0] != _hash_password(password):
-            return jsonify({"error": "invalid credentials"}), 401
-        # create session for this user
-        return create_session()
+        return jsonify({"error": "invalid credentials"}), 401
+    if password_needs_rehash(row[0]):
+        if len(password) < 12:
+            con.close()
+            return jsonify({"error": "password reset required"}), 403
+        cur.execute("UPDATE users SET pw_hash = ? WHERE username = ?", (hash_password(password), username))
+        con.commit()
+    con.close()
     return create_session()
 
 
@@ -345,10 +329,17 @@ def auth_refresh():
     session_id = request.args.get("session_id") or data.get("session_id")
     token = request.headers.get("X-Session-Token") or data.get("token")
     row = _load_session_db(session_id)
-    if not row or row.get("token") != token:
+    if not row or not session_token_matches(token, row.get("token_hash")):
         return jsonify({"error": "invalid session"}), 401
-    # extend token_expires by 24h
-    import datetime, json
+    import datetime
+    try:
+        expires_at = datetime.datetime.fromisoformat(row["token_expires"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=datetime.timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "invalid session"}), 401
+    if datetime.datetime.now(datetime.timezone.utc) > expires_at:
+        return jsonify({"error": "invalid session"}), 401
 
     new_expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat()
     con = sqlite3.connect(DB_PATH)
@@ -368,7 +359,7 @@ def auth_logout():
     # If not in memory, try load
     if not sess:
         row = _load_session_db(session_id)
-        if row and row.get("token") == token:
+        if row and session_token_matches(token, row.get("token_hash")):
             # delete DB row
             con = sqlite3.connect(DB_PATH)
             cur = con.cursor()
@@ -377,7 +368,7 @@ def auth_logout():
             con.close()
             return jsonify({"status": "logged_out", "session_id": session_id})
     else:
-        if sess.get("token") == token:
+        if session_token_matches(token, sess.get("token_hash")):
             # remove in-memory and DB
             _sessions.pop(session_id, None)
             con = sqlite3.connect(DB_PATH)
@@ -386,14 +377,17 @@ def auth_logout():
             con.commit()
             con.close()
             return jsonify({"status": "logged_out", "session_id": session_id})
-    return jsonify({"error": "invalid session_or_token"}), 400
+    return jsonify({"error": "invalid session or token"}), 401
 
 
 def _expire_old_sessions(ttl_seconds: int) -> int:
     """Expire sessions with last_active older than TTL (seconds). Returns count expired."""
     import datetime
 
-    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(seconds=ttl_seconds)).isoformat()
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        - datetime.timedelta(seconds=ttl_seconds)
+    ).isoformat()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("SELECT session_id FROM sessions WHERE last_active < ? OR token_expires < ?", (cutoff, cutoff))
@@ -436,7 +430,7 @@ def start():
 def state():
     session, session_id = current_session()
     if not session:
-        return jsonify({"error": "no session", "session_id": None}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     gm = session["game"]
     return jsonify({
         "session_id": session_id,
@@ -460,7 +454,7 @@ def action():
     data = request.get_json(silent=True) or {}
     session, session_id = current_session()
     if not session:
-        return jsonify({"error": "no session", "session_id": None}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     gm = session["game"]
     lock = session["lock"]
 
@@ -485,7 +479,7 @@ def action():
                 # persist
                 import json
 
-                _save_session_db(session_id, session.get("token"), json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
+                _save_session_db(session_id, session["token_hash"], json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
             except Exception:
                 pass
             return jsonify({"status": "sold", "proceeds": proceeds, "asset": removed.to_dict(), "player": serialize_player(gm.player), "session_id": session_id})
@@ -501,7 +495,7 @@ def action():
             try:
                 import json
 
-                _save_session_db(session_id, session.get("token"), json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
+                _save_session_db(session_id, session["token_hash"], json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
             except Exception:
                 pass
             return jsonify({
@@ -530,7 +524,7 @@ def action():
             try:
                 import json
 
-                _save_session_db(session_id, session.get("token"), json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
+                _save_session_db(session_id, session["token_hash"], json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
             except Exception:
                 pass
             return jsonify({
@@ -560,7 +554,7 @@ def action():
             try:
                 import json
 
-                _save_session_db(session_id, session.get("token"), json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
+                _save_session_db(session_id, session["token_hash"], json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
             except Exception:
                 pass
             return jsonify({
@@ -579,7 +573,7 @@ def step():
     data = request.get_json(silent=True) or {}
     session, session_id = current_session()
     if not session:
-        return jsonify({"error": "no session", "session_id": None}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     gm = session["game"]
     months = int(data.get("months", 1))
     events = []
@@ -589,7 +583,7 @@ def step():
         try:
             import json
 
-            _save_session_db(session_id, session.get("token"), json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
+            _save_session_db(session_id, session["token_hash"], json.dumps(gm.player.to_dict()), json.dumps(gm.economy.state.__dict__))
         except Exception:
             pass
     return jsonify({
@@ -605,7 +599,7 @@ def step():
 def save():
     session, session_id = current_session()
     if not session:
-        return jsonify({"error": "no session", "session_id": None}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     gm = session["game"]
     save_path = os.path.join(os.getcwd(), f"savegame_{session_id}.json")
     save_game(save_path, gm.player, gm.economy.state)
@@ -614,24 +608,22 @@ def save():
 
 @app.route("/load", methods=["POST"])
 def load():
-    data = request.get_json(silent=True) or {}
-    session_id = data.get("session_id")
-    if not session_id:
-        return jsonify({"error": "no session_id", "session_id": None}), 400
+    session, session_id = current_session()
+    if not session:
+        return jsonify({"error": "invalid or expired session"}), 401
     save_path = os.path.join(os.getcwd(), f"savegame_{session_id}.json")
     loaded = load_game(save_path)
     if not loaded:
         return jsonify({"error": "no save", "session_id": session_id}), 404
     player, econ = loaded
-    gm = GameManager()
-    gm.player = player
-    gm.economy.state = econ
-    _sessions[session_id] = {"game": gm, "lock": threading.Lock()}
+    with session["lock"]:
+        session["game"].player = player
+        session["game"].economy.state = econ
     return jsonify({
         "status": "loaded",
         "session_id": session_id,
-        "player": serialize_player(gm.player),
-        "economy": serialize_economy(gm.economy.state),
+        "player": serialize_player(session["game"].player),
+        "economy": serialize_economy(session["game"].economy.state),
     })
 
 
@@ -649,8 +641,9 @@ def cashflow_start():
     engine = CashflowGameEngine(profession=profession, region=region, seed=seed)
     session_id = str(uuid.uuid4())
     token = secrets.token_hex(16)
+    token_hash = hash_session_token(token)
     
-    _cashflow_sessions[session_id] = {"engine": engine, "lock": threading.Lock(), "token": token}
+    _cashflow_sessions[session_id] = {"engine": engine, "lock": threading.Lock(), "token_hash": token_hash}
     
     # persist to DB
     try:
@@ -661,7 +654,7 @@ def cashflow_start():
         cur = con.cursor()
         cur.execute(
             "REPLACE INTO cashflow_sessions(session_id, token, game_state, created_at, last_active, token_expires) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, token, json.dumps(engine.state_snapshot()), now, now, expires),
+            (session_id, token_hash, json.dumps(engine.state_snapshot()), now, now, expires),
         )
         con.commit()
         con.close()
@@ -678,40 +671,44 @@ def cashflow_start():
 
 def _get_cashflow_session(session_id: str | None, token: str | None) -> tuple | None:
     """Load and validate a Cashflow game session."""
-    if not session_id:
+    if not session_id or not token:
         return None
-    
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        "SELECT game_state, token, token_expires FROM cashflow_sessions WHERE session_id = ?",
+        (session_id,),
+    )
+    row = cur.fetchone()
+    con.close()
+    if not row or not session_token_matches(token, row[1]):
+        _cashflow_sessions.pop(session_id, None)
+        return None
+
+    import datetime
+    try:
+        exp = datetime.datetime.fromisoformat(row[2])
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        _cashflow_sessions.pop(session_id, None)
+        return None
+    if datetime.datetime.now(datetime.timezone.utc) > exp:
+        _cashflow_sessions.pop(session_id, None)
+        return None
+
     sess = _cashflow_sessions.get(session_id)
-    if not sess and session_id:
-        try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "SELECT game_state, token, token_expires FROM cashflow_sessions WHERE session_id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
-            con.close()
-            if row:
-                import datetime
-                if row[2]:
-                    exp = datetime.datetime.fromisoformat(row[2])
-                    if exp.tzinfo is None:
-                        exp = exp.replace(tzinfo=datetime.timezone.utc)
-                    if datetime.datetime.now(datetime.timezone.utc) > exp:
-                        return None
-                engine = CashflowGameEngine(profession="startup", region="tier2")
-                state_dict = json.loads(row[0])
-                engine.player.cash = state_dict.get("cash", 0.0)
-                engine.player.salary = state_dict.get("salary", 0.0)
-                _cashflow_sessions[session_id] = {"engine": engine, "lock": threading.Lock(), "token": row[1]}
-                sess = _cashflow_sessions[session_id]
-        except Exception:
-            return None
-    
-    if sess and token and sess.get("token") != token:
+    if sess and sess.get("token_hash") != row[1]:
+        _cashflow_sessions.pop(session_id, None)
         return None
-    
+    if not sess:
+        engine = CashflowGameEngine(profession="startup", region="tier2")
+        state_dict = json.loads(row[0])
+        engine.player.cash = state_dict.get("cash", 0.0)
+        engine.player.salary = state_dict.get("salary", 0.0)
+        sess = {"engine": engine, "lock": threading.Lock(), "token_hash": row[1]}
+        _cashflow_sessions[session_id] = sess
     return sess, session_id
 
 
@@ -724,7 +721,7 @@ def cashflow_turn():
     
     result = _get_cashflow_session(session_id, token)
     if not result:
-        return jsonify({"error": "no session"}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     
     sess, session_id = result
     engine = sess["engine"]
@@ -770,7 +767,7 @@ def cashflow_deal():
     
     result = _get_cashflow_session(session_id, token)
     if not result:
-        return jsonify({"error": "no session"}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     
     sess, session_id = result
     engine = sess["engine"]
@@ -822,7 +819,7 @@ def cashflow_escape():
     
     result = _get_cashflow_session(session_id, token)
     if not result:
-        return jsonify({"error": "no session"}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     
     sess, session_id = result
     engine = sess["engine"]
@@ -861,7 +858,7 @@ def cashflow_sell():
     
     result = _get_cashflow_session(session_id, token)
     if not result:
-        return jsonify({"error": "no session"}), 400
+        return jsonify({"error": "invalid or expired session"}), 401
     
     sess, session_id = result
     engine = sess["engine"]

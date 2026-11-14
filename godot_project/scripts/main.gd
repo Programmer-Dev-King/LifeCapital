@@ -38,7 +38,7 @@ func _ready():
     confirm_dialog.connect("confirmed", Callable(self, "_on_confirmed_sell"))
 
 func _on_start_pressed():
-    _post_json("/auth/login", {"profile": {"region": "tier2", "education": "graduate"}})
+    _post_json("/session", {"profile": {"region": "tier2", "education": "graduate"}})
 
 func _on_step_pressed():
     _post_json("/step", {"months": 1})
@@ -90,8 +90,7 @@ func _on_http_request_request_completed(result, response_code, headers, body):
         session_label.text = "Session: %s" % session_id
     if response.has("token"):
         session_token = response["token"]
-        # show short token in UI
-        state_label.text = "Token: %s..." % session_token.substr(0, 6)
+        state_label.text = "Session token acquired"
 
     # preview response: show proceeds and ask for confirmation
     if response.has("proceeds"):
